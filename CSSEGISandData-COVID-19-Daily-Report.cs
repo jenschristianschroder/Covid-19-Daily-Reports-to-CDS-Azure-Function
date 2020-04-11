@@ -26,9 +26,11 @@ namespace PowerAppsGuy.Covid19
             string filename = req.Query["filename"];
 
             int i = 0;
+            int batchSize = 0;
             int totalRecords = 0;
 
             JObject dailyReportObject = new JObject();
+            List<JObject> dailyReportBatch = new List<JObject>();
 
             string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
             dynamic data = JsonConvert.DeserializeObject(requestBody);
@@ -71,7 +73,58 @@ namespace PowerAppsGuy.Covid19
 
                         foreach(dailyReport record in list) {
                             i++;
-                            if(countryRegion != record.Country_Region) {
+
+                            
+                            if(countryRegion != record.Country_Region || batchSize > 500) {
+
+                                if(dailyReportBatch.Count > 0) {
+                                //Init Batch
+                                    string batchName = $"batch_{Guid.NewGuid()}";
+                                    MultipartContent batchContent = new MultipartContent("mixed", batchName);
+
+                                    string changesetName = $"changeset_{Guid.NewGuid()}";
+                                    MultipartContent changesetContent = new MultipartContent("mixed", changesetName);
+
+                                    for(int j=0; j<dailyReportBatch.Count;j++)
+                                    {
+                                        HttpRequestMessage requestMessage = new HttpRequestMessage(HttpMethod.Post, "https://org0b63707e.api.crm4.dynamics.com/api/data/v9.1/" + "pag_dailyreports");
+                                        requestMessage.Version = new Version(1,1);
+                                        HttpMessageContent messageContent = new HttpMessageContent(requestMessage);
+                                        messageContent.Headers.Remove("Content-Type");
+                                        messageContent.Headers.Add("Content-Type", "application/http");
+                                        messageContent.Headers.Add("Content-Transfer-Encoding", "binary");
+
+                                        StringContent stringContent = new StringContent(dailyReportBatch[j].ToString());
+                                        stringContent.Headers.ContentType = MediaTypeHeaderValue.Parse("application/json;type=entry");
+                                        requestMessage.Content = stringContent;
+                                        messageContent.Headers.Add("Content-ID", j.ToString());
+                                        
+                                        changesetContent.Add(messageContent);
+                                    }
+                                    batchContent.Add(changesetContent);
+
+                                    HttpRequestMessage batchRequest = new HttpRequestMessage(HttpMethod.Post, "https://org0b63707e.api.crm4.dynamics.com/api/data/v9.1/" + "$batch");
+                                    batchRequest.Version = new Version(1,1);
+                                    batchRequest.Content = batchContent;
+                                    batchRequest.Headers.Add("Prefer", "odata.include-annotations=\"OData.Community.Display.V1.FormattedValue\"");
+                                    batchRequest.Headers.Add("OData-MaxVersion", "4.0");
+                                    batchRequest.Headers.Add("OData-Version", "4.0");
+                                    batchRequest.Headers.Add("Accept", "application/json");
+                                    batchRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+                                    //Execute Batch request
+                                    HttpResponseMessage batchResponse = await client.SendAsync(batchRequest);
+
+                                    //MultipartMemoryStreamProvider body = await response.Content.ReadAsMultipartAsync();
+                                    //await batchResponse.Content.ReadAsStringAsync();
+                                    //Output result
+                                    Console.WriteLine($"Batch Request Result:\n********************************************************\n {await batchResponse.Content.ReadAsStringAsync()}");
+                                    //clear list of records
+                                    dailyReportBatch.Clear();
+                                    batchSize = 0;
+                                }
+
+
                                 countryRegion = record.Country_Region;
                                 HttpRequestMessage countryRegionRequest = createMessage(HttpMethod.Get, "pag_countryregions(pag_name='" + record.Country_Region.Replace("'","") + "')", accessToken);
                                 var countryRegionResponse = await client.SendAsync(countryRegionRequest);
@@ -127,11 +180,15 @@ namespace PowerAppsGuy.Covid19
                             dailyReportObject.Add("pag_confirmed", record.Confirmed);
                             dailyReportObject.Add("pag_recovered", record.Recovered);
                             dailyReportObject.Add("pag_filedate", filedate);
-                            createDailyReport.Content = new StringContent(dailyReportObject.ToString(), System.Text.Encoding.UTF8, "application/json");
+                            
+                            dailyReportBatch.Add(dailyReportObject);
+                            batchSize++;    
+                            
+/*                             createDailyReport.Content = new StringContent(dailyReportObject.ToString(), System.Text.Encoding.UTF8, "application/json");
                             
                             var result = await client.SendAsync(createDailyReport);
 
-                            var contents = await result.Content.ReadAsStringAsync();
+                            var contents = await result.Content.ReadAsStringAsync(); */
                         }
                     }
                 }
